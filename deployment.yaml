@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: 
+    name: ${app_name}-${env}
+    labels:
+        app: ${app_name}
+        enviroment: ${env}
+    namespace: ${namespace}
+spec:
+    replicas: 2
+    selector:
+        matchLabels: 
+            app: ${app_name}
+            enviroment: ${env}
+    template:
+        metadata:
+            labels:
+                app: ${app_name}
+                enviroment: ${env}
+        spec:
+            topologySpreadConstraints:
+            - maxSkew: 1                          # Здесь определяем уровень неравномерности между зонами не более одного, что увеличивает отказоустойчивость приложения
+              topologyKey: kubernetes.io/zone
+              whenUnsatisfiable: DoNotSchedule    
+              labelSelector:
+                matchLabels:
+                  app: ${app_name}
+            - maxSkew: 1                          # Также определяем максимальную неравномерность между нодами чтобы не иметь несколько подов на одной ноде при дальнейшем масштабировании  
+              topologyKey: kubernetes.io/node
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchLabels:
+                  app: ${app_name}
+                  enviroment: ${env}
+            containers:
+            - name: ${app_name}
+              image: ${image_url}:${image_tag}
+              imagePullPolicy: IfNotPresent
+              ports:
+              - containerPort: 80
+              livenessProbe:                      # Проверяем статус пода, давая ему 10 секунд на инициализацию
+                  httpGet:
+                      path: /health
+                      port: 80
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+              resources:                          # Определяем ресурсы, по памяти реквесты и лимиты устанавливаем одного размера, по ЦПУ оставляем место для роста при запуске контейнера
+                requests:
+                  memory: "128Mi"
+                  cpu: "150m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "500m"
+---
+apiVersion: autoscaling/v2beta2                   # HPA для масштабирования при повышении нагрузки днем
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ${app_name}-${env}
+spec:
+    scaleTargetRef:
+        apiVersion : apps/v1
+        kind: Deployment 
+        name: ${app_name}-${env}
+    minReplicas: 2                                # Максимальное число реплик исходя из результатов нагрузочного тестирования, минимальное 2 для отказоустойчивости (не зря же описывали topologySpreadConstraints)
+    maxReplicas: 4
+    metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+# Говоря про масштабирование, также можно использовать кронджобы которые будут скейлить количество реплик в зависмости от времени суток, но HPA позволит так же экономить ресурсы днем в случае низкой активности
